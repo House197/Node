@@ -1,5 +1,47 @@
+# Arquitectura Limpia, Patrón repositorio
+
+<img src='Imagenes\Notas-ArqLimpia.png'></img>
+
+- Con el patrón repositorio se separa en capas la lógica.
+    - Va desde círculos internos a externos.
+    - La comunicación surge desde los círculos externos hacia los internos.
+        - Las entidades no hablan con los casos de uso, ni los casos de uso hablan con los presentadores, ni los presentadores hablan con la base de datos.
+
+- Al trabajar con arquitectura limpia se tienen las consideraciones que no deberían afectar si:
+    - Se cambia la DB.
+    - Se cambia el motor de correos.
+    - Se añade o eliminan tareas.
+    - Se desea trabajar con múltiples origenes de datos.
+
+- Lo anterior hace referencia al principio SOLID.
+    - El código (clases, etc) no deberpia tener más de una razón por la cual cambiar. 
+        - Si un caso de uso cambia entonces no debería afectar a las entidades.
+        - Si un presentador cambia, no debería afectar a los casos de uso.
+        - Si la db cambia no debería afectar a la aplicación.
+
+## Entidades
+- Son una representación.
+
+## Casos de uso
+- Use case es una función que se usa.
+- Tienen acceso al repositorio.
+
+## Inyección de dependencia 
+- Se le conoce así y no solo como pasar un argumento porque la dependencia ya está instanciada.
+    - Es pasar un argumento a alguna clase, función, repositorio, etc. 
+    - Se pasa una clase como dependencia.
+- Normalmente se realiza en un constructor.
+    - Entonces, es añadirle dependencias a las clases.
 # Notas
 - Todo lo que se ejecuta en el archivo principal es síncrono.
+- Todo código de terceros debe ser adaptado (patrón adaptador).
+    - Se puede hacer click + alt sobre la dependencia deseada y ver su firma para saber cómo definir sus parámetros en ts.
+- En Clean Code cuando se tienen más de 3 argumentos se recomienda mandar un objeto.
+
+## Uso mocks
+- TS indica error debido a la singature de métodos que usan mock, lo cual se debe de importar difrectamente a jest de @jest/globals.
+    - jest ya se puede usar directamente, pero para que no indique error se debe tener los archivos de test en el include de tsconfig.
+    - Como se menciona en el curso es posible tener dos archivos de tsconfig, uno para desarrollo y otro para producción.
 
 # Sección 03.
 ### Package.json Scripts
@@ -75,3 +117,22 @@ module.exports = {
 - En TS es común trabajar con funciones, pero con JS se trabaja con Factory Functions comunmente.
 
 <img src='Imagenes\06.CleanArq.png'></img>
+
+## TS y Jest
+- TS es de gran utilidad, ya que se encarga de asegurar ciertos detalles que ayudan a ya no testear en jest, tal como el tipo de dato de argumento.
+
+## Espías
+- Los espías permiten sobrescribir el funcionamiento de un méodo.
+- Al definir un espía todos los tests que continúan a partir de su declaración en el mismo archivo van a manejar la implementación del espía. En otras palabras, el espía se persiste entre tests.
+    - Se puede resolver limpiando el espía cuando acabe la prueba. Revisar sección 07, trest de save file.
+- Siempre se deben limpiar los tests cada que acaba una prueba, como lo es el caso con los espías o cuando se cambia process.argv
+
+``` ts
+    const originalArgv = process.argv;
+
+    beforeEach(() => {
+        process.argv = originalArgv;
+        jest.resetModules();
+    });
+
+```
