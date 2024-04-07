@@ -11,3 +11,15 @@ services:
       - ./mongo:/data/db
     ports:
       - 27017:27017
+    
+  postgre-sql:
+    image: postgres:15.3
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres-volume:/var/lib/postgresql/data
+    ports:
+      - 5431:5432

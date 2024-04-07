@@ -1199,3 +1199,950 @@ export class Server {
     }
 }
 ```
+
+## 5. LogEntity fromJson Depuración
+- Sucedía un error ya que llega a veces un json vacío.
+    - Esto es porque en algún documento log que está en DB no tiene datos entonces retorna un string vacío.
+- Lo antertior surge en el video al probar el método getLogs del repositorio, en donde se buscaba por severidad de medium.
+1. Retornar un arreglo vacío en el método de file-sytstem.datasource.ts
+``` ts
+    private getLogsFromFile = (path: string): LogEntity[] => {
+        const content = fs.readFileSync(path, 'utf8');
+        if (content === '') return []
+        const logs = content.split('\n').map(LogEntity.fromJson);
+
+        return logs;
+    }
+```
+
+2. Validar en LogEntity si el json es vacío.
+
+``` ts
+    static fromJson = (json: string): LogEntity => {
+        json = (json === '') ? '{}':json;
+        const {message, level, createdAt, origin} = JSON.parse(json);
+        const log = new LogEntity({message, level, origin, createdAt});
+        log.createdAt = new Date(createdAt)
+
+        return log;
+    }
+```
+
+## 6. PostgreSQL instalación
+1. Se crea el servicio de Postgres en el docker compose.
+2. Definir nueva variable de entorno para guardar enlace de conexión a la db de postgres.
+    - De igual manera se definen las demás variables para el user, pwd y db.
+
+## 7. Prisma - ORM
+https://www.prisma.io/docs/getting-started
+1. Instalar
+``` bash
+npm i -D prisma
+```
+
+2. Set up Prisma
+``` bash
+npx prisma init --datasource-provider PostgreSQL
+```
+
+3. Configurar Prisma.
+    - Por defecto ya crea un archivo en donde se muestra la configuración y reconoce automáticamente variables en el .env.
+    1. Prisma coloca su propia variable en .env con la cadena de conexión, la cual se pega en la variable definida propiamente y se modifica la última parte para colocar el nombre de la DB, el user y pwd.
+    2. Se coloca en el archivo de prisma la variable de entorno que tiene la url.
+    3. Crear modelo en archivo de prisma.
+        - En prisma se pueden crear enums, los cuales deben ir en mayúsculas.
+        - El esquema creado se usa para construir el objeto. Se tienen dos situaciones:
+            1. Con este modelo significa que no se tiene la base de datos creada (no hay nada en la db). Entonces, se requiere de migraciones o hacer modificaciones.
+            2. Si ya se tiene la db creada, entonces se puede hacer npx prisma db pull para traer todo el esquema y crear estos objetos nuevamente. Es decir, Prisma va a leer la db y crear los objetos, lo cual se tuvo que hacer a mano ya que se está en la situación 1.
+
+``` ts
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_URL")
+}
+
+enum SeverityLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model LogModel {
+  id        Int       @id @default(autoincrement())
+  message   String
+  origin    String
+  level     SeverityLevel
+  createdAt DateTime  @default(now())
+}
+
+```
+
+4. Crear migración para crear tablas en db con Prisma Migrate.
+    - Esto genera el Prisma Client, el cual es lo que se ocupa para trabajar con la db. Se puede ver como si automáticamente ya se crea el esquema, modelo, cadena de conexión, etc.
+    - Las migracione sen db indican por ejemplo cómo está la db antes y la modificación que se hace.
+        - Si algo sale mal se pueden revertir las migraciones, lo cual sería revertir la acción creada.
+        - En la carpeta de prisma ahora se tiene el folder de migrations.
+``` bash
+npx prisma migrate dev --name init
+```
+
+5. Pruebas de inserción
+    - En app.ts se hacen las pruebas.
+
+``` ts
+
+(async() => {
+    main();
+})()
+
+async function main() {
+    await MongoDatabase.connect({mongoUrl: envs.MONGO_URL, dbName: envs.MONGO_DB_NAME});
+
+/*     const newLog = await LogModel.create({
+        message: 'Test message desde mongo',
+        origin: 'App.ts',
+        level: 'low'
+    });
+
+    await newLog.save(); 
+
+    const logs = await LogModel.find();
+    console.log(logs);*/
+
+    //Server.start();
+
+    const prisma = new PrismaClient();
+
+    const newLog= await prisma.logModel.create({
+        data: {
+            level: "HIGH",
+            message: 'Test message Prisma',
+            origin: 'App.ts'
+        }
+    });
+
+    console.log({newLog});
+}
+```
+
+6. Pruebas de búsqueda
+
+``` ts
+    const prisma = new PrismaClient();
+
+    const logs = await prisma.logModel.findMany(
+        {where: {
+            level:  "HIGH"
+        }}
+    );
+    console.log(logs);
+```
+
+## 8. PostgresLog DataSource
+1. src\infrastructure\datasources\postgres-log.datasource.ts
+    - Se tiene que los ENUM de prisma están en mayúscula, por lo que se crea un enum para relacionar el severityLevel creado de forma propia con el enum creado por prisma.
+    - Al momento de buscar en la db se debe hacer conversión del objeto de la app con lo que retorna la db.
+
+``` ts
+import { LogDatasource } from "../../domain/datasources/log.datasource";
+import { LogEntity, LogSeverityLevel } from "../../domain/entities/log-entity";
+import { PrismaClient, SeverityLevel } from '@prisma/client';
+
+const prismaClient = new PrismaClient();
+
+const severityEnum = {
+    low: SeverityLevel.LOW,
+    medium: SeverityLevel.MEDIUM,
+    high: SeverityLevel.HIGH,
+}
+
+export class PostgresLogDatasource implements LogDatasource {
+    async saveLog(log: LogEntity): Promise<void> {
+        const level = severityEnum[log.level];
+        const newLog = await prismaClient.logModel.create({
+            data: {
+                ...log,
+                level,
+            }
+        });
+    }
+    
+    async getLogs(severityLevel: LogSeverityLevel): Promise<LogEntity[]> {
+        const level = severityEnum[severityLevel];
+
+        const dbLogs = await prismaClient.logModel.findMany({
+            where: {level}
+        });
+
+        return dbLogs.map(dbLog => LogEntity.fromObject(dbLog));
+    }
+
+}
+```
+
+2. Llamar datasource en server.ts
+
+``` ts
+const logRepository = new LogRepositoryImpl(
+    //new FileSystemDatasource(),
+    //new MongoLogDatasource(),
+    new PostgresLogDatasource()
+);
+
+const emailService = new EmailService();
+
+export class Server {
+    public static start() {
+        console.log("Server started...");
+        //new SendEmailLogs(emailService, fileSystemLogRepository).execute(['arturo.riverar97@gmail.com']);
+
+/*         emailService.senEmailWithFileSystemLogs(
+            ['arturo.riverar97@gmail.com'],
+        ) */
+         CronService.createJob(
+            '*/5 * * * * *',
+            () => {
+                new CheckService(
+                    logRepository,
+                    () => console.log('success'),
+                    (error) => console.log(error), 
+                ).execute('http://localhost:3000');
+            }
+        ) 
+    }
+}
+```
+
+## 9. Grabar en Mongo, PostgresSQL y FS simultáneamente
+- A los casos de uso no le interesa el origen de datos siempre y cuando se le mande la función o el repositorio que se tiene que llamar.
+- Se crea nuevo caso de uso que trabaje con las tres datasources.
+1. Crear copia de check-service.ts
+    1. src\domain\use-cases\checks\check-service-multiple.ts
+    - Va a ser igual, solo se cambia el nombre de la enum y de la clase.
+    - La diferencia es que se recibe un arreglo de datasources.
+2. Crear método callLogs para mandar a guardar en todos datasources, el cual va a reemplazar a saveLog, el cual está marcado por rojo gracias a ts.
+
+``` ts
+export class CheckServiceMultiple implements CheckServiceMultiplUseCase {
+
+    constructor(
+        private readonly logRepository: LogRepository[],
+        private readonly successCallback: SuccessCallback,
+        private readonly errorCallback: ErrorCallback
+    ){}
+
+    private callLogs(log: LogEntity) {
+        this.logRepository.forEach(logRepository => {
+            logRepository.saveLog(log);
+        })
+    }
+```
+
+3. Probar en server.ts
+    1. Usar clase CheckServiceMultiple.
+    2. Definir repositorios en nivel superior.
+
+``` ts
+const fsLogRepository = new LogRepositoryImpl(
+    new FileSystemDatasource(),
+);
+
+const mongoLogRepository = new LogRepositoryImpl(
+   new MongoLogDatasource(), 
+);
+
+const postgresLogRepository = new LogRepositoryImpl(
+    new PostgresLogDatasource(),
+ );
+    
+    
+
+const emailService = new EmailService();
+
+export class Server {
+    public static start() {
+        console.log("Server started...");
+
+         CronService.createJob(
+            '*/5 * * * * *',
+            () => {
+                new CheckServiceMultiple(
+                    [fsLogRepository,mongoLogRepository,postgresLogRepository],
+                    () => console.log('success'),
+                    (error) => console.log(error), 
+                ).execute('http://localhost:3000');
+            }
+        ) 
+    }
+}
+```
+
+# Sección 12. NOC - Testing - Clean Architecture
+- El testing va a ser un proceso de construcción de producción de la aplicación, por lo que se recomienda usar bases de datos fuera de docker para que estén siempre disponibles a la hora de hacer testeos.
+    - Esto es el caso cuando el testing se ejecuta con GitHub Action y similares, los cuales requieren de una db para ir haciendo el testeo cada que detectan cambios.
+    - Si se hace de forma local entonces docker puede funcionar.
+## 1. Preparación testing. Opcional ya que ya se tiene la db funcionando
+1. Borrar volúmenes de bases de datos.
+2. Borrar contenedores de bases de datos.
+3. Volver a levantar bases de datos con docker.
+    - Al borrar bases de datos entonces se debe ejecutar la sección de prisma de nuevo.
+4. Ejecutar comando:
+``` bash
+npx prisma migrate dev
+```
+- Si la DB ya existiera entonces sería:
+``` bash
+npx prisma db pool
+```
+
+## 2. Configurar testing
+1. Instalar dependencias de jest.
+``` bash
+npm i -D jest @types/jest ts-jest supertest
+```
+
+2. Crear archivo de configuración de jest.
+    - Se da que sí a todo, se selecciona node y v8.
+    - Por otro lado, la sección de limpieza de mocks se sigue diciendo que no para seguir aprendiendo cómo limpiarlos manualmente.
+``` bash
+npx jest --init
+```
+
+3. Configurar jest.config.ts
+``` js
+    preset: 'ts-jest',
+    testEnvironment: "jest-environment-node"
+```
+
+4. Crear scripts en package.json.
+
+``` json
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jets --coverage"
+```
+
+## 3. Montar bases de datos y ENVs de Testing
+- Se separa el ambiente de desarrollo del de testeo.
+1. Crear archivo .env.test
+    - Por el momento basta solo con cambiar el nombre de las DB.
+2. Crear archivo de docker compose llamado docker-compose.test.yml
+    - Lo único que va a variar es el nombre del volumen.
+3. Colocar scripts en package.json
+``` json
+    "docker:test": "docker compose -f docker-compose.test.yml --env-file .env.test up -d",
+    "test": "npm run docker:test && jest",
+    "test:watch": "npm run docker:test && jest --watch",
+    "test:coverage": "npm run docker:test && jest --coverage"
+```
+4. Correr comando:
+``` bash
+npm run test:watch
+```
+## 4. Crear setupTest.ts
+- Es un script o serie de procesos que se van a ejecutar antes de levantar la aplicación.
+- Se configuran las variables de entorno de test.
+
+``` ts
+import { config } from 'dotenv';
+
+config({
+    path: '.env.test'
+});
+```
+
+- Se le indica a Jest que cuando se levante debe ejecutar este archivo primero. Esto se hace en jest.config.ts con el campo setupfiles
+
+``` ts
+  setupFiles: [
+    "<rootDir>/setupTest.ts"
+  ],
+```
+
+## 4. Pruebas en ENVs
+- Para las pruebas se sigue la arquitectura de crear los archivos de test a lado de los originales en lugar de crear un carpeta específica para los tests.
+1. src\config\plugins\envs.plugin.test.ts
+
+``` ts
+import { envs } from "./envs.plugin";
+import { describe, it, expect, jest } from "@jest/globals";
+
+describe("envs.plugin", () => {
+    it("Should return env options", () => {
+        expect(envs).toEqual(  {
+            PORT: 3000,
+            MAILER_SERVICE: 'gmail',
+            MAILER_EMAIL: 'arturo.riverar97@gmail.com',
+            MAILER_SECRET_KEY: 'xhezkmrlfepvvpvn',
+            PROD: true,
+            MONGO_URL: 'mongodb://arturo:123456@localhost:27017/',
+            MONGO_USER: 'arturo',
+            MONGO_PASS: '123456',
+            MONGO_DB_NAME: 'NOC-TEST'
+          })
+    });
+
+    it("Should return error if not found env", async () => {
+        jest.resetModules();
+        process.env.PORT = 'ABC';
+        try {
+            await import('./envs.plugin');
+            expect(true).toBe(false);
+        } catch (error) {
+            expect(error).toContain('"PORT" should be a valid integer'); 
+        }
+
+    })
+})
+```
+
+## 5. Pruebas en la conexión de MongoDB
+- Se sigue la metodología de lo que menos dependencias tiene hasta el que más tiene.
+
+### 1. init.ts
+- Se coloca que la clase retorna true o false según si s elogra la conexión o no. Por otro lado, los tests también ayudan a que los console.logs no lleguen a producción.
+
+``` ts
+import { describe, it, expect, jest } from "@jest/globals";
+import { MongoDatabase } from './init';
+
+describe('init MongoDB', () => {
+    it('Should connet to MongoDB', async () => {
+        console.log(process.env.MONGO_URL, process.env.MONGO_DB_NAME);
+
+        const connected = await MongoDatabase.connect({
+            dbName: process.env.MONGO_DB_NAME!,
+            mongoUrl: process.env.MONGO_URL!    
+        })
+
+        expect(connected).toBeTruthy();
+    });
+
+    it('Should throw and error', async () => {
+
+        try {
+            const connected = await MongoDatabase.connect({
+                dbName: process.env.MONGO_DB_NAME!,
+                mongoUrl: 'fake_url'    
+            });
+            expect(true).toBeFalsy();
+        } catch (error) {
+
+        }
+    });
+})
+```
+
+### 2. Pruebas en modelo de mongo
+1. Node\08-NOC\src\data\mongo-set\models\log.model.test.ts
+2. Se conecta primero a la DB para hacer pruebas, lo cual se realiza con un beforeAll.
+    - De igual manera se termina la conexión con afterAll.
+- Al evaluar el schema en la sección de createdAt se evalúa rapidamente con expect.any(Object) a modo de no tener que evaluar cada campo de ahí.
+- Cuando se acaba la prueba de insertar en db se borra el registro.
+
+``` ts
+import { describe, it, beforeAll, afterAll,expect, jest } from "@jest/globals";
+import { MongoDatabase } from "../init";
+import { envs } from "../../../config/plugins/envs.plugin";
+import mongoose from "mongoose";
+import { LogModel } from './log.model';
+
+describe('log.mode.test.ts', () => {
+
+    beforeAll(async () => {
+        await MongoDatabase.connect({
+            mongoUrl: envs.MONGO_URL,
+            dbName: envs.MONGO_DB_NAME
+        })
+    });
+
+    afterAll(() => {
+       mongoose.connection.close(); 
+    });
+
+    it('Should return LogModel', async () => {
+        const logData = {
+            origin: 'log.model.test.ts',
+            message: 'test-message',
+            level: 'low'
+        }
+
+        const log = await LogModel.create(logData);
+        expect(log).toEqual(expect.objectContaining({
+            ...logData,
+            id: expect.any(String),
+            createdAt: expect.any(Date)
+        }))
+
+        // Limpiar registro de la base de datos
+        await LogModel.findByIdAndDelete(log.id);
+    });
+
+    it('Should return the schema object', () => {
+        const schema = LogModel.schema.obj;
+
+        expect(schema).toEqual(expect.objectContaining(
+            {
+                level: {
+                  type: expect.any(Function),
+                  enum: [ 'low', 'medium', 'high' ],
+                  default: 'low'
+                },
+                message: { type:  expect.any(Function), required: true },
+                origin: { type:  expect.any(Function) },
+                createdAt: expect.any(Object),
+              }
+        ));
+    });
+});
+```
+
+## 6. Pruebas en clases abstractas
+1. Node\08-NOC\src\domain\datasources\log.datasource.test.ts
+- Se hacen pruebas de que las implementaciones existan y de que se pasen los argumentos correctamente.
+
+``` ts
+import { describe, it, beforeAll, afterAll,expect, jest } from "@jest/globals";
+import { LogDatasource } from './log.datasource';
+import { LogEntity, LogSeverityLevel } from "../entities/log-entity";
+
+describe('log.datasource.ts LogDatasource', () => {
+
+    const newLog = new LogEntity({
+        origin: 'log.datasource.test.ts',
+        message: 'test-message',
+        level: LogSeverityLevel.low,
+    })
+
+    class MockLogDatasource implements LogDatasource {
+        async saveLog(log: LogEntity): Promise<void> {
+            return ;
+        }
+        async getLogs(severityLevel: LogSeverityLevel): Promise<LogEntity[]> {
+            return [newLog];
+        }
+
+    }
+
+    it('Should test the abstract class', async () => {
+        const mockLogDatasource = new MockLogDatasource();
+
+        expect(mockLogDatasource).toBeInstanceOf(MockLogDatasource);
+        expect(typeof mockLogDatasource.saveLog).toBe('function');
+        expect(typeof mockLogDatasource.getLogs).toBe('function');
+
+        await mockLogDatasource.saveLog(newLog);
+        const logs = await mockLogDatasource.getLogs(LogSeverityLevel.high);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toBeInstanceOf(LogEntity);
+    });
+});
+```
+
+## 7. Pruebas en LogEntity
+1. Node\08-NOC\src\domain\entities\log-entity.test.ts
+- En este test se aprecia que si no se pasaba una fecha con ese tipo de dato entonces se volvía string.
+``` ts
+import { describe, it, expect } from "@jest/globals";
+import { LogEntity, LogSeverityLevel } from "./log-entity";
+
+describe("LogEntity", () => {
+    it('Should create a LogEntity instance', () => {
+
+        const dataObj = {
+            message: "Hola Mundo",
+            level: LogSeverityLevel.high,
+            origin: 'log.entity.test.ts',
+        }
+
+        const log = new LogEntity(dataObj);
+
+        expect(log).toBeInstanceOf(LogEntity);
+        expect(log.message).toBe(dataObj.message);
+        expect(log.level).toBe(dataObj.level);
+        expect(log.origin).toBe(dataObj.origin);
+        expect(log.createdAt).toBeInstanceOf(Date);
+    });
+
+    it("Should crate a LogEntity instance from json", () => {
+        const json = `{"message":"http://localhost:3000 is not ok. TypeError: fetch failed","level":"high","createdAt":"2024-04-03T02:07:50.057Z","origin":"check-service.ts"}`
+
+        const log = LogEntity.fromJson(json);
+
+        expect(log).toBeInstanceOf(LogEntity);
+        expect(log.message).toBe("http://localhost:3000 is not ok. TypeError: fetch failed");
+        expect(log.level).toBe(LogSeverityLevel.low);
+        expect(log.origin).toBe("check-service.ts");
+        expect(log.createdAt).toBeInstanceOf(Date);
+    });
+
+    it("Should create a LogEntity instance from object", () => {
+        const dataObj = {
+            message: "Hola Mundo",
+            level: LogSeverityLevel.high,
+            origin: 'log.entity.test.ts',
+        }
+
+        const log = LogEntity.fromObject(dataObj);
+
+        expect(log).toBeInstanceOf(LogEntity);
+        expect(log.message).toBe("http://localhost:3000 is not ok. TypeError: fetch failed");
+        expect(log.level).toBe(LogSeverityLevel.low);
+        expect(log.origin).toBe("check-service.ts");
+        expect(log.createdAt).toBeInstanceOf(Date);
+    });
+});
+```
+
+## 8. Pruebas en CheckService UseCase
+1. Node\08-NOC\src\domain\use-cases\checks\check-service.test.ts
+2. Los sujetos de prueba siempre se colocan en el nivel superior.
+
+``` ts
+import { describe, it, expect, beforeEach} from "@jest/globals";
+import { CheckService } from './check-service';
+import { LogEntity } from "../../entities/log-entity";
+
+describe('CheckService UseCase', () => {
+    const mockRepository = {
+        saveLog: jest.fn(),
+        getLogs: jest.fn(),
+    }
+
+    const successCallback = jest.fn();
+    const errorCallback = jest.fn();
+
+    const checkService = new CheckService(
+        mockRepository,
+        successCallback,
+        errorCallback,
+    );
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    it("Should call successCallback when fetch returns true", async ()=> {
+        const wasOk = await checkService.execute('https://google.com')
+
+        expect(wasOk).toBeTruthy();
+        expect(successCallback).toHaveBeenCalled();
+        expect(errorCallback).not.toHaveBeenCalled();
+
+        expect(mockRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+    });
+
+    it("Should call errorCallback when fetch returns false", async ()=> {
+        const wasOk = await checkService.execute('https://goodasdasdasdsagle')
+
+        expect(wasOk).toBeFalsy();
+        expect(successCallback).not.toHaveBeenCalled();
+        expect(errorCallback).toHaveBeenCalled();
+
+        expect(mockRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+    });
+});
+```
+
+## 9. Pruebas en SendEmailLogs UseCase
+1. Node\08-NOC\src\domain\use-cases\email\send-email-logs.test.ts
+- En este caso se tiene el email service, el cual no requiere de test ahora ya que se llegará a eso después.
+- Solo importa que se mande a llamar lo que se desea.
+2. Usar palabra reservada as para indicarle a TS que tome un determinado mock como si fuera de tipo EmailService o any de última opción. Esto permite no tener que implementar todo de esa clase para poder probar lo que interesa.
+    - Usar any permite usar jest de @types/glboal
+
+``` ts
+import { describe, it, expect, jest } from "@jest/globals";
+import { SendEmailLogs } from './send-email-logs';
+import { LogEntity, LogSeverityLevel } from "../../entities/log-entity";
+import { beforeEach } from "node:test";
+
+describe('send-email-logs.ts', () => {
+
+    const mockLogRepository = {
+        saveLog: jest.fn(),
+        getLogs: jest.fn(),
+    }
+    
+    const emailService = {
+        senEmailWithFileSystemLogs: jest.fn().mockReturnValue(true),
+    }
+
+    const sendEmailLogs = new SendEmailLogs(
+        emailService as any,
+        mockLogRepository as any,
+    )
+
+    beforeEach(() => {
+        jest.clearAllMocks()
+    })
+
+    it('Should callsendEmail and saveLog', async () => {
+        const wasOk = await sendEmailLogs.execute('test@google.com');
+
+        expect(wasOk).toBeTruthy();
+        expect(emailService.senEmailWithFileSystemLogs).toHaveBeenCalledTimes(1);
+        expect(mockLogRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+        expect(mockLogRepository.saveLog).toBeCalledWith({
+            message: `Log email sent`,
+            level: LogSeverityLevel.low,
+            origin: 'send-email-logs.ts',
+            createdAt: expect.any(Date)
+        });
+    });
+
+    it('Should log in case of error', async () => {
+        emailService.senEmailWithFileSystemLogs = jest.fn().mockReturnValue(false);
+        const wasOk = await sendEmailLogs.execute('test@google.com');
+
+        expect(wasOk).toBeFalsy();
+        expect(emailService.senEmailWithFileSystemLogs).toHaveBeenCalledTimes(1);
+        expect(mockLogRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+        expect(mockLogRepository.saveLog).toBeCalledWith({
+            message: `Error: Email log not send`,
+            level: LogSeverityLevel.high,
+            origin: 'send-email-logs.ts',
+            createdAt: expect.any(Date)
+        });
+    });
+});
+```
+
+## 10. Pruebas en MongoLogDatasource
+1. Node\08-NOC\src\infrastructure\datasources\mongo-log.datasource.test.ts
+- En este caso el caso de uso no retorna algo, por lo que se aprecia que se pudo haber hecho algo más para ayudar con el testeo como lo es el retorno de una instancia del log creado. Entonces, se va a probar el console log que se tiene, lo cual es bueno desde el punto de vista educativo pero en producción los console.logs no deben llegar.
+
+``` ts
+import { describe, it, expect, jest, beforeAll, afterAll, afterEach } from '@jest/globals';
+import { MongoDatabase } from '../../data/mongo-set/init';
+import { envs } from "../../config/plugins/envs.plugin";
+import mongoose from 'mongoose';
+import { MongoLogDatasource } from './mongo-log.datasource';
+import { LogEntity, LogSeverityLevel } from '../../domain/entities/log-entity';
+import { LogModel } from '../../data/mongo-set/models/log.model';
+
+describe('mongo-log.datasource.ts', () => {
+
+    const logDatasource = new MongoLogDatasource();
+
+    
+    const log = new LogEntity({
+        message: `Mensaje desde test`,
+        level: LogSeverityLevel.high,
+        origin: 'mongo-log.datasource.test.ts'
+    })
+
+    beforeAll(async () => {
+        await MongoDatabase.connect({
+            dbName: envs.MONGO_DB_NAME,
+            mongoUrl: envs.MONGO_URL
+        })
+    });
+
+    afterEach(async () => {
+        // Por esta razón la db debe ser diferente en testing.
+        await LogModel.deleteMany();
+    })
+
+    afterAll(() => {
+        mongoose.connection.close();
+    })
+
+    it('Should create a log', async () => {
+        const logDatasource = new MongoLogDatasource();
+        const logSpy = jest.spyOn(console, 'log');
+
+        await logDatasource.saveLog(log);
+
+        expect(logSpy).toHaveBeenCalled();
+        expect(logSpy).toHaveBeenCalledWith('Mongo log created', expect.any(String));
+    });
+
+    it('Should get logs', async () => {
+        await logDatasource.saveLog(log);
+        const logs = await logDatasource.getLogs(LogSeverityLevel.high);
+        
+        expect(logs.length).toBe(1);
+        expect(logs[0].level).toBe(LogSeverityLevel.high);
+    });
+});
+```
+
+## 11. Pruebas en FileSystemDatasource
+- Para este caso se debe borrar la carpeta de logs para poder crearla por medio de testing.
+
+``` ts
+import { describe, it, expect, jest, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import fs from 'fs';
+import path from 'path';
+import { FileSystemDatasource } from './file-system.datasource';
+import { LogEntity, LogSeverityLevel } from '../../domain/entities/log-entity';
+
+describe('FileSystemDatasource', () => {
+    const logPath = path.join(__dirname, '../../../logs');
+
+    beforeEach(() => {
+        fs.rmSync(logPath, {recursive: true, force: true});
+    })
+
+    it('Should create log files if they do not exist', () => {
+        new FileSystemDatasource();
+        const files = fs.readdirSync(logPath);
+        expect(files).toEqual(['logs-all.log', 'logs-high.log', 'logs-medium.log']);
+    });
+
+    it('Should save a log in logs-all.log', () => {
+        const logDatasource = new FileSystemDatasource();
+        const log = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.low,
+            origin: 'file system test'
+        })
+
+        logDatasource.saveLog(log);
+        const allLogs = fs.readFileSync(`${logPath}/logs-all.log`, 'utf-8');
+        expect(allLogs).toContain(JSON.stringify(log));
+    });
+
+    it('Should save a log in logs-all.log and medium', () => {
+        const logDatasource = new FileSystemDatasource();
+        const log = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.medium,
+            origin: 'file system test'
+        })
+
+        logDatasource.saveLog(log);
+        const allLogs = fs.readFileSync(`${logPath}/logs-all.log`, 'utf-8');
+        const mediumLogs = fs.readFileSync(`${logPath}/logs-medium.log`, 'utf-8');
+        expect(allLogs).toContain(JSON.stringify(log));
+        expect(mediumLogs).toContain(JSON.stringify(log));
+    });
+
+    it('Should save a log in logs-all.log and logs-high.log', () => {
+        const logDatasource = new FileSystemDatasource();
+        const log = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.high,
+            origin: 'file system test'
+        })
+
+        logDatasource.saveLog(log);
+        const allLogs = fs.readFileSync(`${logPath}/logs-all.log`, 'utf-8');
+        const highLogs = fs.readFileSync(`${logPath}/logs-high.log`, 'utf-8');
+        expect(allLogs).toContain(JSON.stringify(log));
+        expect(highLogs).toContain(JSON.stringify(log));
+    });
+
+    it('Should return all logs', async () => {
+        const logDatasource = new FileSystemDatasource();
+        const logLow = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.low,
+            origin: 'low'
+        })
+
+        const logMedium = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.medium,
+            origin: 'medium'
+        })
+
+        const logHigh = new LogEntity({
+            message: `test`,
+            level: LogSeverityLevel.high,
+            origin: 'high'
+        })
+
+        await logDatasource.saveLog(logLow);
+        await logDatasource.saveLog(logMedium);
+        await logDatasource.saveLog(logHigh);
+
+        const logsLow = await logDatasource.getLogs(LogSeverityLevel.low);
+        const logsMedium = await logDatasource.getLogs(LogSeverityLevel.medium);
+        const logsHigh = await logDatasource.getLogs(LogSeverityLevel.high);
+
+        expect(logsLow).toEqual(expect.arrayContaining([logLow, logMedium, logHigh]));
+        expect(logsMedium).toEqual(expect.arrayContaining([logMedium]));
+        expect(logsHigh).toEqual(expect.arrayContaining([logHigh]));
+    });
+});
+```
+
+## 12. Pruebas en LogRepositoryImpl
+- La pruebas consisten en crar un datasource mock y probar que lo que se pasa como argumento haga que los métodos que se llamen sí hayan sido llamados con esos argumentos.
+
+``` ts
+import { describe, it, expect, jest, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import { LogRepositoryImpl } from './log.repository.impl';
+import { LogDatasource } from '../../domain/datasources/log.datasource';
+import { LogEntity, LogSeverityLevel } from '../../domain/entities/log-entity';
+
+describe('LogRepositoryImpl', () => {
+
+    const mockDatasource = {
+        saveLog: jest.fn(),
+        getLogs: jest.fn()
+    }
+
+    const logRepositoryImpl = new LogRepositoryImpl(mockDatasource as LogDatasource);
+
+    const log = new LogEntity({
+        message: `Log email sent`,
+        level: LogSeverityLevel.low,
+        origin: 'send-email-logs.ts'
+    })
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+    })
+
+    it('saveLog should call the datasource with arguments', async () => {
+        await logRepositoryImpl.saveLog(log);
+        expect(mockDatasource.saveLog).toHaveBeenCalledWith(log);
+        expect(mockDatasource.saveLog).toHaveBeenCalledTimes(1);
+    }); 
+
+    it('getLogs should call the datasource with arguments', async () => {
+        await logRepositoryImpl.getLogs(log.level);
+        expect(mockDatasource.getLogs).toHaveBeenCalledWith(log.level);
+        expect(mockDatasource.getLogs).toHaveBeenCalledTimes(1);
+    }); 
+});
+```
+
+## 13. Pruebas en CronService
+- En este caso se debe comprobar que la tarea se ejecute la cantidad de veces dependiendo de lo que se le mande.
+- Se utiliza done para código asíncrono en donde se le desea indicar a jest que se espere en la prueba.
+
+``` ts
+import { describe, it, expect, jest, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import { CronService } from './cron-service';
+
+describe('CronService', () => {
+    const mockTick = jest.fn();
+    it('Should create a job', (done)=> {
+        const job = CronService.createJob('* * * * *', mockTick);
+        setTimeout(() => {
+            expect(mockTick).toBeCalledTimes(2);
+            job.stop();
+            done();
+        }, 2000);
+    });
+});
+```
+
+## 14. Pruebas con EmailService
+- Esta sección es más compleja ya que a propósito se dejaron dependencias ocultas.
+- Se va a probar que si se llama a sendEmail entonces que haya sido llamado con los argumentos que se esperan se envíen.
+    - Por el momento no se van a enviar porque no se tiene configurado el .env.test
+    - De modo educativo se hace de la forma complicada usando mocks en lugar de definir las variables de prueba en .env.test
+- Se realiza mock a createTransport.
+
+### Creación de mock para paquete
+1. Se importa el paquete.
+2. Se crea mock a createTransport.

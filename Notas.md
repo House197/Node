@@ -43,6 +43,60 @@
     - jest ya se puede usar directamente, pero para que no indique error se debe tener los archivos de test en el include de tsconfig.
     - Como se menciona en el curso es posible tener dos archivos de tsconfig, uno para desarrollo y otro para producción.
 
+# Creación nuevo proyecto
+## 1. Crear package.json
+``` bash
+npm init -y 
+```
+
+## 2. Node con TpyeScript - TS-Node-dev
+https://gist.github.com/Klerith/3ba17e86dc4fabd8301a59699b9ffc0b
+1. Instalar TS y demás dependencias.
+
+``` bash
+npm i -D typescript @types/node ts-node-dev rimraf
+```
+
+2. Inicializar el archivo de configuración de TypeScript.
+``` bash
+npx tsc --init --outDir dist/ --rootDit src
+```
+
+3. Crear scripts para dev, build y start.
+``` json
+  "dev": "tsnd --respawn --clear src/app.ts",
+  "build": "rimraf ./dist && tsc",
+  "start": "npm run build && node dist/app.js"
+```
+
+## 3. Configurar tsconfig.json
+1. Ignorar:
+    - node_modules
+    - archivos de testeo.
+    - carpeta de dist
+2. Incluir
+    - src
+
+``` json
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/*.spec.ts"],
+  "include": ["src/**/*"],
+```
+
+## 4. Express (opcional)
+- Asegurarse que el archivo de definición de ts y la versión de express estén lo más cerca posible.
+``` bash
+npm install express
+```
+
+``` bash
+npm i -D @types/express
+```
+
+## 5. Variables de entorno
+``` bash
+npm i dotenv env-var
+```
+
 # Sección 03.
 ### Package.json Scripts
 1. **Start** es especial, ya que solo se debe correr **npm start**. Para otros scripts se debe usar **npm run nameScript**.
@@ -79,6 +133,7 @@ module.exports = {
 
 ## Sección 05. Testing.
 - Se debe ir probando las piezas más pequeñas hasta las más grandes del código.
+- Los tests son importantes ya que al primera vista pareciera que las pruebas son obvias y se espera siempre funcionen, pero si en un futuro algún tercero modifica el código entonces se atrapan esos cambios y los errores que se ocasionen. Por ejemplo, que se haya cambiado el números de parámetros que una función espere.
 ### Coverage
 - Al correr npx jest --init hay una sección de coverage, el cual puede proveer de una gráfica qué tan cubiertp está el código con testing.
 
@@ -135,4 +190,53 @@ module.exports = {
         jest.resetModules();
     });
 
+```
+
+## Notas Testing
+- Los sujetos de prueba siempre se colocan en el nivel superior.
+
+``` ts
+import { describe, it, expect, beforeEach} from "@jest/globals";
+import { CheckService } from './check-service';
+import { LogEntity } from "../../entities/log-entity";
+
+describe('CheckService UseCase', () => {
+    const mockRepository = {
+        saveLog: jest.fn(),
+        getLogs: jest.fn(),
+    }
+
+    const successCallback = jest.fn();
+    const errorCallback = jest.fn();
+
+    const checkService = new CheckService(
+        mockRepository,
+        successCallback,
+        errorCallback,
+    );
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    it("Should call successCallback when fetch returns true", async ()=> {
+        const wasOk = await checkService.execute('https://google.com')
+
+        expect(wasOk).toBeTruthy();
+        expect(successCallback).toHaveBeenCalled();
+        expect(errorCallback).not.toHaveBeenCalled();
+
+        expect(mockRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+    });
+
+    it("Should call errorCallback when fetch returns false", async ()=> {
+        const wasOk = await checkService.execute('https://goodasdasdasdsagle')
+
+        expect(wasOk).toBeFalsy();
+        expect(successCallback).not.toHaveBeenCalled();
+        expect(errorCallback).toHaveBeenCalled();
+
+        expect(mockRepository.saveLog).toBeCalledWith(expect.any(LogEntity));
+    });
+});
 ```

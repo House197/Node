@@ -8,3 +8,6 @@ logs/
 
 .env
 mongo/
+postgres-volume/
+
+keys/
