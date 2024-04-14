@@ -32,6 +32,12 @@
     - Se pasa una clase como dependencia.
 - Normalmente se realiza en un constructor.
     - Entonces, es añadirle dependencias a las clases.
+
+## DTO (Data Transfer Object)
+- Son objetos que sirve para trasladarlo a otro lugar.
+- Objeto hecho para transferir información.
+- Se crean Dtos por cada endpoint que se recibe información.
+
 # Notas
 - Todo lo que se ejecuta en el archivo principal es síncrono.
 - Todo código de terceros debe ser adaptado (patrón adaptador).
@@ -42,6 +48,24 @@
 - TS indica error debido a la singature de métodos que usan mock, lo cual se debe de importar difrectamente a jest de @jest/globals.
     - jest ya se puede usar directamente, pero para que no indique error se debe tener los archivos de test en el include de tsconfig.
     - Como se menciona en el curso es posible tener dos archivos de tsconfig, uno para desarrollo y otro para producción.
+
+## Instancia o métodos estáticos
+- Se usa una instancia cuando se desea hacer inyeccción de dependencias, de lo contrario se pueden usar métodos estáticos.
+
+# Notas generales
+- En JS los objetos pasan por referencia.
+
+# Rest Server
+## Middleware
+- Función que se ejecuta cuando una petición pasa por ahí.
+- Son funciones que se ejecutan antes de que llegue al controlador la petición.
+
+## Controllers
+- Usualmente se aplica inyección de dependencias.
+    - Por ejemplo, se inyecta un repositorio y que las rutas usen ese repo. O también, inyectar el repositorio para poder implementar y usarlo mediante casos de uso.
+
+## Status codes
+https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
 
 # Creación nuevo proyecto
 ## 1. Crear package.json
@@ -63,6 +87,7 @@ npx tsc --init --outDir dist/ --rootDit src
 ```
 
 3. Crear scripts para dev, build y start.
+    - En start se puede omitir npm run build, ya que al alojarlo ya se corre ese código por defecto.
 ``` json
   "dev": "tsnd --respawn --clear src/app.ts",
   "build": "rimraf ./dist && tsc",
@@ -84,6 +109,7 @@ npx tsc --init --outDir dist/ --rootDit src
 
 ## 4. Express (opcional)
 - Asegurarse que el archivo de definición de ts y la versión de express estén lo más cerca posible.
+- Es común trabajar con un modelo MVC al usar express.
 ``` bash
 npm install express
 ```
@@ -96,6 +122,191 @@ npm i -D @types/express
 ``` bash
 npm i dotenv env-var
 ```
+
+## 6. Jest
+1. Instalar dependencias
+``` bash
+npm install -D jest @types/jest ts-jest supertest
+npm i -D @types/supertest
+```
+
+2. Crear archivo de configuración de jest.
+``` bash
+npx jest --init
+```
+
+3. Configurar en jest.config.ts
+    - setupFile se ocupa si se desean ocupar otras variables de entorno específicas para testing.
+``` ts
+preset: 'ts-jest',
+testEnvironment: "jest-environment-node",
+
+// Opcional - The paths to modules that run some code to configure or set up the testing environment before each test
+setupFiles: ["<rootDir>/setupTests.ts"],
+```
+
+4. Crear scripts en package.json
+
+``` js
+"test": "jest",
+"test:watch": "jest --watch",
+"test:coverage": "jest --coverage",
+```
+
+5. Crear setupTests.ts para hacer pruebas en otra DB que sea de testing, así como las variables de entorno para testing.
+    - Esto y el campo de setupFiles puede no ser necesario ya que nod permite que se mande la variable env.
+``` ts
+import { config } from 'dotenv';
+
+
+config({
+  path: '.env.test'
+});
+```
+
+6. Crear .env.test
+7. Aprovisionar Postgres (o db que se desee.)
+    - https://neon.tech/
+    - Se crea la db y se obtiene la URL de conexión para colocarlo en .env.test
+### Aprovisionamiento DB con Prisma.
+1. Se usa Postgres.
+2. Instalar dotenv-cli
+``` bash
+npm i -D dotenv-cli
+```
+2. Especificar a prisma que use la cadena de conexión de testing.
+    - Se crea script en package.json, el cual debe llamarase cada que se ejecuta el testing.
+``` json
+"prisma:migrate:test": "dotenv -e .env.test -- npx prisma migrate deploy",
+"test": "npm run prisma:migrate:test && jest",
+"test:watch": "npm run prisma:migrate:test && jest --watch",
+"test:coverage": "npm run prisma:migrate:test && jest --coverage",
+```
+
+## Opcionales
+### Levantar base de datos MongoDB
+1. Preparar variables de entorno.
+2. Preparar docker compose
+
+``` yml
+version: '3.8'
+
+
+services:
+
+  mongo-db:
+    image: mongo:6.0.6
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mongo-user
+      MONGO_INITDB_ROOT_PASSWORD: 123456
+    volumes:
+      - ./mongo:/data/db
+    ports:
+      - 27017:27017
+```
+
+3. Instalar mongoose.
+
+``` bash
+npm i mongoose
+```
+
+4. Crear servicio en src -> data -> mongo -> mongo-database.ts
+
+``` ts
+import mongoose from "mongoose";
+
+interface Options {
+    mongoUrl: string;
+    dbName: string;
+}
+
+export class MongoDatabase {
+    static async connect(options: Options) {
+        const { mongoUrl, dbName } = options;
+
+        try {
+            await mongoose.connect(mongoUrl, {
+                dbName: dbName,
+            })
+
+            return true;
+            
+        } catch (error) {
+            console.log("Mongo connection error");
+            throw error;
+        }
+    }
+}
+```
+
+5. Definir variables de entorno en envs.
+
+
+``` ts
+import 'dotenv/config';
+import {get} from 'env-var';
+
+export const envs = {
+
+  PORT: get('PORT').required().asPortNumber(),
+  MONGO_URL: get('MONGO_URL').required().asString(),
+  MONGO_DB_NAME: get('MONGO_DB_NAME').required().asString(),
+}
+```
+
+6. Inicializar mongo en app.ts
+
+``` ts
+async function main() {
+
+  await MongoDatabase.connect({
+    mongoUrl: envs.MONGO_URL,
+    dbName: envs.MONGO_DB_NAME,
+  })
+```
+
+### Levantar base de datos Postgres
+https://gist.github.com/Klerith/49bbec66abe6affe3700324d2d3bf440
+1. Preparar variables de entorno.
+2. Preparar docker compose.
+
+``` yml
+version: '3.8'
+
+
+services:
+
+  postgres-db:
+    image: postgres:15.3
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+```
+- Las carpetas de volumen no van en git.
+
+3. Instalar prisma
+``` bash
+npm install -D prisma
+```
+
+``` bash
+npx prisma init --datasource-provider postgresql
+```
+
+4.  Crear modelo y apuntar a URL propia de .env.
+5. Correr migraciones
+``` bash
+npx prisma migrate dev --name init
+```
+
 
 # Sección 03.
 ### Package.json Scripts
